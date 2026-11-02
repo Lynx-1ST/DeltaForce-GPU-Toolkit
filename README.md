@@ -36,10 +36,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start-GpuTool.ps1 -Lan
 
 Changing the displayed GPU name does not change the physical GPU or its capabilities. Option 6 modifies anti-cheat process scheduling; it is not a general performance boost. These operations retain the underlying utility's behavior and limitations.
 
-## Tieng Viet (khong dau)
+## Vietnamese
 
 - Tai va giai nen toan bo repo, sau do mo `Start.bat`.
-- Chon **1** de dung tieng Anh, **2** de dung tieng Viet khong dau; **0** de thoat truoc khi xin quyen quan tri.
+- Chon **1** de dung tieng Anh, **2** de dung tieng Viet; **0** de thoat truoc khi xin quyen quan tri.
 - Ban nay khong can ma kich hoat, khong tao fingerprint cap phep va khong tu hoan tac khi het han.
 - Cac muc [3] va [5] van cho phep khoi phuc thu cong. Viec thoat chuong trinh khong tu hoan tac cac thay doi da ap dung.
 - Tool van co the sua Registry GPU, khoi dong lai thiet bi hien thi, doi mau man hinh va ha uu tien tien trinh ACE. Xem [SAFETY.md](SAFETY.md) truoc khi su dung.
