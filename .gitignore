@@ -1,0 +1,29 @@
+# Generated profiles and local user state
+ICCFilter/
+filterorder.json
+gpu_backup.json
+gputool.log
+icc_original.txt
+*.log
+license.dat
+used.dat
+
+# Local analysis, original artifacts and publication staging
+analysis/
+publish/
+GpuTool.ps1
+GpuTool.vi.ps1
+KhoiDong_TiengViet.bat
+
+# Editor and OS files
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Local credentials and environment files
+.env
+.env.*
+*.key
+*.pem
