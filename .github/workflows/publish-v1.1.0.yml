@@ -1,0 +1,37 @@
+name: Publish v1.1.0
+on:
+  push:
+    branches: [main]
+    paths:
+      - RELEASE_NOTES_v1.1.0.md
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release ZIP
+        shell: bash
+        run: |
+          mkdir -p dist
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          from hashlib import sha256
+          files = ['Start.bat','Start-GpuTool.ps1','GpuTool.i18n.ps1','gpu_models.json','gpu_ui.json','locales/en.json','locales/vi.json']
+          dest = Path('dist/DeltaForce-GPU-Toolkit-v1.1.0.zip')
+          with ZipFile(dest,'w',ZIP_DEFLATED) as archive:
+              for name in files:
+                  assert Path(name).is_file(), name
+                  archive.write(name)
+          digest=sha256(dest.read_bytes()).hexdigest()
+          Path('dist/SHA256SUMS.txt').write_text(f'{digest}  {dest.name}\n')
+          print(digest)
+          PY
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create v1.1.0 dist/DeltaForce-GPU-Toolkit-v1.1.0.zip dist/SHA256SUMS.txt --title 'v1.1.0 - English / Vietnamese' --target "$GITHUB_SHA" --notes-file RELEASE_NOTES_v1.1.0.md
