@@ -6,7 +6,7 @@ The supplied utility was inspected and localized. Activation-code checks, machin
 
 ## Download and run
 
-1. Download this repository using **Code > Download ZIP**, or clone it, then extract the whole folder.
+1. Download the ready-to-run ZIP from [Releases](https://github.com/Lynx-1ST/gpu-tool-en-vi/releases/latest), then extract the whole folder.
 2. Double-click `Start.bat`.
 3. Choose **1 - English** or **2 - Vietnamese**. Choose **0** to exit before any Administrator prompt.
 4. The utility requests Administrator access after language selection.
