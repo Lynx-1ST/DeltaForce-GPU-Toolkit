@@ -14,7 +14,7 @@ function Read-UiLanguage {
         Write-Host '  GPU Tool / Cong cu GPU' -ForegroundColor Cyan
         Write-Host '==========================================' -ForegroundColor Cyan
         Write-Host '  [1] English'
-        Write-Host '  [2] Tieng Viet (khong dau)'
+        Write-Host '  [2] Vietnamese'
         Write-Host '  [0] Exit / Thoat'
         $choice = [string](Read-Host 'Language / Ngon ngu')
         switch ($choice.Trim().ToLowerInvariant()) {

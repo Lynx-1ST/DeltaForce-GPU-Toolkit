@@ -1,4 +1,4 @@
-# GPU Tool - English / Tieng Viet
+# GPU Tool - English / Vietnamese
 
 A Windows PowerShell utility with an English / Vietnamese language selector. Vietnamese messages use ASCII characters without diacritics.
 
@@ -8,7 +8,7 @@ The supplied utility was inspected and localized. Activation-code checks, machin
 
 1. Download this repository using **Code > Download ZIP**, or clone it, then extract the whole folder.
 2. Double-click `Start.bat`.
-3. Choose **1 - English** or **2 - Tieng Viet (khong dau)**. Choose **0** to exit before any Administrator prompt.
+3. Choose **1 - English** or **2 - Vietnamese**. Choose **0** to exit before any Administrator prompt.
 4. The utility requests Administrator access after language selection.
 
 Keep `GpuTool.i18n.ps1`, `Start-GpuTool.ps1` and the `locales` folder together. No package installation is required. The utility targets Windows 10/11 with Windows PowerShell 5.1.
