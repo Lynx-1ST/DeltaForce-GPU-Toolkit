@@ -24,3 +24,9 @@ After downloading and extracting the latest release, double-click one of:
 The CMD scripts use the existing tool and **request Administrator permission automatically via UAC**. If multiple discrete GPUs are found, choose **[1], [2], ...**; with exactly one discrete GPU, it is chosen automatically. You still need to keep `GpuTool.i18n.ps1`, `gpu_models.json`, `locales/` and the CMD launchers in the same extracted folder.
 
 **Backups:** Keep `gpu_backup.json` in the same directory when updating. Revert will not guess an original name when a backup is missing. Editing GPU descriptions does not upgrade the physical hardware.
+
+## OneClick_Revert.cmd - installed driver INF (v1.2.3)
+
+`OneClick_Revert.cmd` no longer requires `gpu_backup.json`. It requests Administrator through the Windows UAC prompt, finds the selected PCI display device's installed INF, and asks Windows Plug and Play to re-enumerate that device from the installed driver store. If there are multiple GPUs, choose 1/2/etc.; if there is only one, it runs without a GPU-selection question. No extra yes/no confirmation is shown.
+
+**Important:** Save your work first. The display can temporarily go black; re-enumeration may fail or require a restart. Windows may choose a different installed driver due to driver ranking, and success cannot be guaranteed on every configuration. No direct Registry name writes or driver package deletion are performed by the Revert shortcut. The other one-click CMD files are unchanged.

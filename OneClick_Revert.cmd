@@ -1,4 +1,5 @@
 @echo off
 setlocal
-title GPU Tool - Revert
-powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "%~dp0GpuTool.i18n.ps1" -Language vi -QuickAction revert
+title GPU Tool - Revert from installed INF
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Restore-FromDriverINF.ps1"
+pause

@@ -1,0 +1,74 @@
+name: Publish v1.2.3 - INF restore
+on:
+  push:
+    branches: [main]
+    paths:
+      - RELEASE_NOTES_v1.2.3.md
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify PowerShell restore and CMD shortcut
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '.\Restore-FromDriverINF.ps1'), [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -ne 0) {
+            $parseErrors | ForEach-Object { Write-Host $_.ToString() }
+            throw 'PowerShell restore script syntax error'
+          }
+          $ps = Get-Content '.\Restore-FromDriverINF.ps1' -Raw
+          $cmd = Get-Content '.\OneClick_Revert.cmd' -Raw
+          if (-not $cmd.Contains('Restore-FromDriverINF.ps1')) { throw 'CMD is not linked to driver restore script' }
+          foreach ($part in @('/remove-device', '/scan-devices', 'DEVPKEY_Device_DriverInfPath', 'Verb RunAs')) {
+            if (-not $ps.Contains($part)) { throw ('Missing feature: ' + $part) }
+          }
+          foreach ($part in @('Set-ItemProperty', 'Remove-Item', 'Get-Content', 'Restore-GpuBackup', 'pnputil.exe /delete-driver')) {
+            if ($ps.Contains($part)) { throw ('Unsafe or backup-dependent restore operation found: ' + $part) }
+          }
+          Write-Host 'PowerShell 5.1 parse and one-click INF restore checks PASS.'
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release archive and checksum
+        shell: bash
+        run: |
+          mkdir -p dist
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          from hashlib import sha256
+          files = [
+            'Start.bat',
+            'Start-GpuTool.ps1',
+            'GpuTool.i18n.ps1',
+            'gpu_models.json',
+            'locales/en.json',
+            'locales/vi.json',
+            'OneClick_GTX_1050_Ti.cmd',
+            'OneClick_RTX_2050.cmd',
+            'OneClick_Revert.cmd',
+            'Restore-FromDriverINF.ps1',
+          ]
+          archive = Path('dist/DeltaForce-GPU-Toolkit-v1.2.3.zip')
+          with ZipFile(archive, 'w', ZIP_DEFLATED) as z:
+              for path in files:
+                  assert Path(path).is_file(), path
+                  z.write(path)
+          digest = sha256(archive.read_bytes()).hexdigest()
+          Path('dist/SHA256SUMS.txt').write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+          print('SHA256', digest)
+          PY
+      - name: Create v1.2.3 release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v1.2.3 dist/DeltaForce-GPU-Toolkit-v1.2.3.zip dist/SHA256SUMS.txt --target "$GITHUB_SHA" --title "v1.2.3 - INF Driver Restore" --notes-file RELEASE_NOTES_v1.2.3.md
