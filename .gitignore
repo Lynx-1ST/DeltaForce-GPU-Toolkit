@@ -27,3 +27,9 @@ Desktop.ini
 .env.*
 *.key
 *.pem
+
+# Native build outputs
+desktop/bin/
+*.obj
+*.pdb
+*.ilk
