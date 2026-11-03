@@ -1383,7 +1383,12 @@ function Invoke-QuickGpuAction {
         $_.IsReal -and $_.FullInst -and $_.EnumPath
     } | Sort-Object Key)
     $discrete = @($all | Where-Object { $_.GpuKind -eq 'Discrete' })
-    $options = if ($discrete.Count -gt 0) { @($discrete) } else { @($all) }
+    [object[]]$options = @()
+    if ($discrete.Count -gt 0) {
+        $options = @($discrete)
+    } else {
+        $options = @($all)
+    }
     $target = $null
 
     if ($options.Count -eq 0) {
