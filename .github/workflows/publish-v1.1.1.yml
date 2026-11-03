@@ -1,0 +1,59 @@
+name: Publish v1.1.1
+on:
+  push:
+    branches: [main]
+    paths:
+      - RELEASE_NOTES_v1.1.1.md
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows PowerShell script and validate GPU presets
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '.\GpuTool.i18n.ps1'), [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Host $_.ToString() }
+            throw 'PowerShell 5.1 syntax check failed'
+          }
+          $models = Get-Content -Raw '.\gpu_models.json' | ConvertFrom-Json
+          $modelCount = @($models | ForEach-Object { $_.Models } | ForEach-Object { $_ }).Count
+          if ($modelCount -ne 8) { throw 'Expected 8 GPU presets' }
+          $ui = Get-Content -Raw '.\gpu_ui.json' | ConvertFrom-Json
+          if (-not $ui.en.G23 -or -not $ui.vi.G23) { throw 'Missing diagnostics translations' }
+          Write-Host 'PowerShell syntax and GPU menu checks passed.'
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          from hashlib import sha256
+          files = ['Start.bat', 'Start-GpuTool.ps1', 'GpuTool.i18n.ps1', 'gpu_models.json', 'gpu_ui.json', 'locales/en.json', 'locales/vi.json']
+          dest = Path('dist/DeltaForce-GPU-Toolkit-v1.1.1.zip')
+          with ZipFile(dest, 'w', ZIP_DEFLATED) as archive:
+              for name in files:
+                  assert Path(name).is_file(), name
+                  archive.write(name)
+          digest = sha256(dest.read_bytes()).hexdigest()
+          Path('dist/SHA256SUMS.txt').write_text(f'{digest}  {dest.name}\n')
+          print('SHA256:', digest)
+          PY
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v1.1.1 dist/DeltaForce-GPU-Toolkit-v1.1.1.zip dist/SHA256SUMS.txt --target "$GITHUB_SHA" --title 'v1.1.1 - GPU Detection Fix' --notes-file RELEASE_NOTES_v1.1.1.md

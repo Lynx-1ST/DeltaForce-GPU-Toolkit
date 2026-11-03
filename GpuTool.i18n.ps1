@@ -241,47 +241,137 @@ function Invoke-RestoreFromInf {
 }
 
 function Get-DisplayAdapters {
-    $active = @()
-    try { $active = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction Stop | Where-Object { $_.InstanceId -match '^PCI\\' }) }
-    catch { $active = @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^PCI\\' -and $_.Status -eq 'OK' }) }
-    $byKey = @{}
-    foreach ($dev in $active) {
-        $id = [string]$dev.InstanceId
-        $enumPath = Join-Path $EnumRoot $id
-        $enumInfo = if (Test-Path -LiteralPath $enumPath) { Get-ItemProperty -LiteralPath $enumPath -ErrorAction SilentlyContinue } else { $null }
-        $driver = ''
-        try { $driver = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName 'DEVPKEY_Device_Driver' -ErrorAction Stop).Data } catch { }
-        if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\[0-9]{4}$' -and $enumInfo) { $driver = [string]$enumInfo.Driver }
-        if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') { continue }
-        $k = $Matches[1]
-        if (-not $byKey.ContainsKey($k)) { $byKey[$k] = @() }
-        $byKey[$k] = @($byKey[$k]) + @([pscustomobject]@{ Instance=$id; EnumPath=$(if($enumInfo){$enumPath}else{$null}); Data=$enumInfo })
-    }
-    $list = @()
-    foreach ($key in @(Get-ChildItem -LiteralPath $ClassKey -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^[0-9]{4}$' })) {
+    # Discover from Enum\PCI first. This does not depend on Get-PnpDeviceProperty
+    # returning a particular driver-key format.
+    $displayGuid = '{4d36e968-e325-11ce-bfc1-08002be10318}'
+    $enumPci = Join-Path $EnumRoot 'PCI'
+    $present = @{}
+    $gotPresentList = $false
+    try {
+        $live = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction Stop |
+            Where-Object { $_.InstanceId -match '(?i)^PCI\\' })
+        foreach ($d in $live) { $present[[string]$d.InstanceId] = $true }
+        $gotPresentList = ($present.Count -gt 0)
+    } catch { Log ('Get-PnpDevice discovery: ' + $_.Exception.Message) }
+
+    if (-not $gotPresentList) {
         try {
-            $p = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
-            if (-not $p.DriverDesc) { continue }
-            $k = [string]$key.PSChildName
-            $entries = if ($byKey.ContainsKey($k)) { @($byKey[$k]) } else { @() }
-            $match = if ($entries.Count -eq 1) { $entries[0] } else { $null }
-            $id = if ($match) { $match.Instance } else { $null }
-            $ep = if ($match) { $match.EnumPath } else { $null }
-            $ed = if ($match) { $match.Data } else { $null }
-            $svc = if ($ed) { [string]$ed.Service } else { '' }
-            $loc = if ($ed) { [string]$ed.LocationInformation } else { '' }
-            $hw = if ($id) { $id } else { [string]$p.MatchingDeviceId }
-            $valid = [bool]($id -and $ep)
-            $list += [pscustomobject]@{
-                Key=$k;Desc=[string]$p.DriverDesc;Provider=[string]$p.ProviderName;
-                InstId=[string]$p.MatchingDeviceId;FullInst=$id;IsReal=$valid;
-                EnumPath=$ep;EnumDesc=$(if ($ed) {[string]$ed.DeviceDesc}else{''});
-                Path=$key.PSPath;HWID=(Get-HwId $hw);InfPath=[string]$p.InfPath;
-                Service=$svc;Location=$loc;
-                GpuKind=$(if ($valid) { Classify-GpuKind (Get-HwId $hw) $svc $loc } else { 'Other' })
-            }
-        } catch { Log ('GPU Class Registry error: ' + $_.Exception.Message) }
+            $liveCim = @(Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -ErrorAction Stop |
+                Where-Object { $_.PNPDeviceID -match '(?i)^PCI\\' -and $_.ConfigManagerErrorCode -eq 0 })
+            foreach ($d in $liveCim) { $present[[string]$d.PNPDeviceID] = $true }
+            $gotPresentList = ($present.Count -gt 0)
+        } catch { Log ('CIM GPU discovery: ' + $_.Exception.Message) }
     }
+
+    if (-not $gotPresentList) {
+        try {
+            $videoControllers = @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
+                Where-Object { $_.PNPDeviceID -match '(?i)^PCI\\' })
+            foreach ($d in $videoControllers) { $present[[string]$d.PNPDeviceID] = $true }
+            $gotPresentList = ($present.Count -gt 0)
+        } catch { Log ('Win32_VideoController discovery: ' + $_.Exception.Message) }
+    }
+
+    # Maps the actual driver class subkey (e.g. 0001) to Enum instance entries.
+    $map = @{}
+    if (Test-Path -LiteralPath $enumPci) {
+        foreach ($modelKey in @(Get-ChildItem -LiteralPath $enumPci -ErrorAction SilentlyContinue)) {
+            foreach ($instanceKey in @(Get-ChildItem -LiteralPath $modelKey.PSPath -ErrorAction SilentlyContinue)) {
+                $id = 'PCI\' + $modelKey.PSChildName + '\' + $instanceKey.PSChildName
+                if ($gotPresentList -and -not $present.ContainsKey($id)) { continue }
+                try {
+                    $e = Get-ItemProperty -LiteralPath $instanceKey.PSPath -ErrorAction Stop
+                    $guid = ([string]$e.ClassGUID).Trim()
+                    if ($guid -and $guid -ine $displayGuid) { continue }
+                    $driver = ([string]$e.Driver).Trim()
+                    if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
+                        # Some installations expose the driver key via the PnP property API.
+                        try {
+                            $driver = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName 'DEVPKEY_Device_Driver' -ErrorAction Stop).Data
+                        } catch { $driver = '' }
+                    }
+                    if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
+                        Log ('No valid class Driver key for Enum PCI device: ' + $id)
+                        continue
+                    }
+                    $slot = $Matches[1]
+                    if (-not $map.ContainsKey($slot)) { $map[$slot] = @() }
+                    $map[$slot] += [pscustomobject]@{
+                        Instance = $id
+                        EnumPath = [string]$instanceKey.PSPath
+                        EnumInfo = $e
+                    }
+                } catch { Log ('Enum PCI entry read error: ' + $_.Exception.Message) }
+            }
+        }
+    }
+
+    # If Enum registry enumeration was blocked, resolve from active PnP IDs.
+    foreach ($id in @($present.Keys)) {
+        $already = $false
+        foreach ($slot in @($map.Keys)) {
+            foreach ($obj in @($map[$slot])) {
+                if ($obj.Instance -ieq $id) { $already = $true; break }
+            }
+            if ($already) { break }
+        }
+        if ($already) { continue }
+
+        $enumPath = Join-Path $EnumRoot $id
+        if (-not (Test-Path -LiteralPath $enumPath)) { continue }
+        try {
+            $entry = Get-ItemProperty -LiteralPath $enumPath -ErrorAction Stop
+            $driver = ([string]$entry.Driver).Trim()
+            if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
+                $driver = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName 'DEVPKEY_Device_Driver' -ErrorAction Stop).Data
+            }
+            if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') { continue }
+            $slot = $Matches[1]
+            if (-not $map.ContainsKey($slot)) { $map[$slot] = @() }
+            $map[$slot] += [pscustomobject]@{
+                Instance = $id
+                EnumPath = $enumPath
+                EnumInfo = $entry
+            }
+        } catch { Log ('PnP fallback error: ' + $_.Exception.Message) }
+    }
+
+    $list = @()
+    foreach ($classKey in @(Get-ChildItem -LiteralPath $ClassKey -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -match '^[0-9]{4}$' })) {
+        try {
+            $p = Get-ItemProperty -LiteralPath $classKey.PSPath -ErrorAction Stop
+            if (-not $p.DriverDesc) { continue }
+            $slot = [string]$classKey.PSChildName
+            $entries = if ($map.ContainsKey($slot)) { @($map[$slot]) } else { @() }
+            $matched = if ($entries.Count -eq 1) { $entries[0] } else { $null }
+            if ($entries.Count -gt 1) {
+                Log ('Ambiguous PCI Enum mapping for Class key ' + $slot)
+            }
+            $instance = if ($matched) { [string]$matched.Instance } else { '' }
+            $ep = if ($matched) { [string]$matched.EnumPath } else { '' }
+            $e = if ($matched) { $matched.EnumInfo } else { $null }
+            $svc = if ($e) { [string]$e.Service } else { '' }
+            $loc = if ($e) { [string]$e.LocationInformation } else { '' }
+            $hardwareId = if ($instance) { $instance } else { [string]$p.MatchingDeviceId }
+            $valid = [bool]($instance -match '(?i)^PCI\\' -and $ep -and (Test-Path -LiteralPath $ep))
+            $list += [pscustomobject]@{
+                Key = $slot; Desc = [string]$p.DriverDesc; Provider = [string]$p.ProviderName
+                InstId = [string]$p.MatchingDeviceId; FullInst = $instance; IsReal = $valid
+                EnumPath = $ep; EnumDesc = $(if ($e) { [string]$e.DeviceDesc } else { '' })
+                Path = $classKey.PSPath; HWID = (Get-HwId $hardwareId); InfPath = [string]$p.InfPath
+                Service = $svc; Location = $loc
+                GpuKind = $(if ($valid) { Classify-GpuKind (Get-HwId $hardwareId) $svc $loc } else { 'Other' })
+            }
+        } catch { Log ('Class GPU entry read error: ' + $_.Exception.Message) }
+    }
+    $Script:GpuLookupSummary = [pscustomobject]@{
+        PresentPCI = $present.Count
+        MappedDriverKeys = $map.Count
+        ClassKeys = $list.Count
+        Usable = @($list | Where-Object { $_.IsReal }).Count
+    }
+    Log ('GPU discovery: PresentPCI=' + $present.Count + '; DriverKeys=' + $map.Count + '; ClassKeys=' + $list.Count)
     return $list
 }
 
@@ -326,7 +416,14 @@ function Show-Current {
 
 function Select-GpuTarget {
     $all = @(Get-DisplayAdapters | Where-Object { $_.IsReal -and $_.FullInst -and $_.EnumPath } | Sort-Object Key)
-    if ($all.Count -eq 0) { Write-Host (Get-UiText 'G01') -ForegroundColor Red; return $null }
+    if ($all.Count -eq 0) {
+        Write-Host (Get-UiText 'G01') -ForegroundColor Red
+        if ($Script:GpuLookupSummary) {
+            Write-Host ((Get-UiText 'G23') -f $Script:GpuLookupSummary.PresentPCI, $Script:GpuLookupSummary.MappedDriverKeys, $Script:GpuLookupSummary.ClassKeys) -ForegroundColor Yellow
+        }
+        Write-Host (Get-UiText 'G24') -ForegroundColor Yellow
+        return $null
+    }
     Write-Host (Get-UiText 'G02') -ForegroundColor Cyan
     for ($i=0; $i -lt $all.Count; $i++) { Write-Host ('[{0}] {1} (Driver {2})' -f ($i+1),$all[$i].Desc,$all[$i].Key) }
     $choice = [string](Read-Host (Get-UiText 'G03'))

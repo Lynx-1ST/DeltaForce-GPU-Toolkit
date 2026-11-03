@@ -24,7 +24,9 @@
     "G22": "Registry write failed: {0}",
     "K0143": "  [2] Select GPU and spoof name (8 presets + custom)",
     "K0144": "  [3] Revert GPU name from backup",
-    "K0139": "  Target GPU: choose at [2]"
+    "K0139": "  Target GPU: choose at [2]",
+    "G23": "GPU diagnostics: PCI devices={0}, driver keys={1}, display class entries={2}.",
+    "G24": "No Registry changes were made. Run [1] to view detected devices; report these counts if the error persists."
   },
   "vi": {
     "G01": "Khong tim thay GPU PCI co Enum hop le.",
@@ -51,6 +53,8 @@
     "G22": "Sua Registry that bai: {0}",
     "K0143": "  [2] Chon GPU va doi ten (8 mau + tu nhap)",
     "K0144": "  [3] Revert ten GPU tu backup",
-    "K0139": "  GPU muc tieu: chon o [2]"
+    "K0139": "  GPU muc tieu: chon o [2]",
+    "G23": "Chan doan GPU: thiet bi PCI={0}, driver key={1}, class GPU={2}.",
+    "G24": "Khong thay doi Registry. Chon [1] de xem GPU; gui cac so luong nay neu van bi loi."
   }
 }
