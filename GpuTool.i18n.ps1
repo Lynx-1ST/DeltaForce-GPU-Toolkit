@@ -3,7 +3,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet('en', 'vi')]
-    [string]$Language = 'vi'
+    [string]$Language = 'vi',
+    [ValidateSet('', '1050ti', '2050', 'revert')]
+    [string]$QuickAction = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,7 +25,9 @@ $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $admin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) {
     Write-Host (Get-UiText 'K0001') -ForegroundColor Yellow
-    Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoExit','-ExecutionPolicy','Bypass','-File',("`"" + $PSCommandPath + "`""),'-Language',$Language)
+    $adminArgs = @('-NoExit','-ExecutionPolicy','Bypass','-File',("`"" + $PSCommandPath + "`""),'-Language',$Language)
+    if ($QuickAction) { $adminArgs += @('-QuickAction', $QuickAction) }
+    Start-Process powershell.exe -Verb RunAs -ArgumentList $adminArgs
     exit
 }
 
@@ -1347,6 +1351,124 @@ function Show-IccMenu {
     } else {
         Write-Host (Get-UiText 'K0103') -ForegroundColor Yellow
     }
+}
+
+
+# Optional one-click entry point; normal menu behavior stays unchanged.
+function Invoke-QuickGpuAction {
+    param([ValidateSet('1050ti','2050','revert')][string]$Action)
+    Write-Host ''
+    Write-Host '===== GPU TOOL - 1 CLICK =====' -ForegroundColor Cyan
+
+    if ($Action -eq 'revert') {
+        if (-not (Test-Path -LiteralPath $BackupFile)) {
+            Write-Host 'Khong co gpu_backup.json. Khong the Revert an toan.' -ForegroundColor Red
+            return
+        }
+        $null = Restore-GpuBackup
+        if (Test-Path -LiteralPath $BackupFile) {
+            Write-Host 'Backup van con: viec Revert co the chua hoan tat. Kiem tra thong bao phia tren.' -ForegroundColor Yellow
+        } else {
+            Write-Host 'Revert da hoan tat. Ten goc duoc khoi phuc tu backup.' -ForegroundColor Green
+        }
+        return
+    }
+
+    $newName = if ($Action -eq '1050ti') {
+        'NVIDIA GeForce GTX 1050 Ti'
+    } else {
+        'NVIDIA GeForce RTX 2050 Laptop GPU'
+    }
+    $all = @(Get-DisplayAdapters | Where-Object {
+        $_.IsReal -and $_.FullInst -and $_.EnumPath
+    } | Sort-Object Key)
+    $discrete = @($all | Where-Object { $_.GpuKind -eq 'Discrete' })
+    $options = if ($discrete.Count -gt 0) { @($discrete) } else { @($all) }
+    $target = $null
+
+    if ($options.Count -eq 0) {
+        Write-Host 'Khong tim thay GPU hop le co Enum. Khong sua Registry.' -ForegroundColor Red
+        return
+    }
+    if ($options.Count -eq 1) {
+        $target = $options[0]
+    } else {
+        Write-Host '===== CHON GPU CAN DOI TEN =====' -ForegroundColor Cyan
+        for ($i = 0; $i -lt $options.Count; $i++) {
+            $gpu = $options[$i]
+            $vendor = Get-GpuVendorFromId $gpu.FullInst
+            Write-Host ('  [{0}] {1} | {2} | Driver key {3}' -f ($i + 1), $gpu.Desc, $vendor, $gpu.Key)
+        }
+        Write-Host '  [0] Huy' -ForegroundColor DarkGray
+        $choice = ([string](Read-Host 'Nhap so GPU')).Trim()
+        $num = 0
+        if (-not [int]::TryParse($choice, [ref]$num) -or $num -lt 1 -or $num -gt $options.Count) {
+            Write-Host 'Da huy hoac so GPU khong hop le. Khong thay doi Registry.' -ForegroundColor Yellow
+            return
+        }
+        $target = $options[$num - 1]
+    }
+    # If an Enum/Class identity is duplicated, do not modify uncertain devices.
+    $same = @($all | Where-Object { $_.FullInst -eq $target.FullInst -or $_.Key -eq $target.Key })
+    if ($same.Count -ne 1) {
+        Write-Host 'Mapping GPU bi trung hoac khong ro rang. Khong sua Registry.' -ForegroundColor Red
+        return
+    }
+
+    if ($target.Desc -eq $newName -and $target.EnumDesc -eq $newName) {
+        Write-Host ('GPU da mang ten: ' + $newName) -ForegroundColor Yellow
+        return
+    }
+    Write-Host ('GPU that: ' + $target.Desc) -ForegroundColor Cyan
+    Write-Host ('Doi thanh: ' + $newName) -ForegroundColor Cyan
+    Write-Host ('Driver key: ' + $target.Key) -ForegroundColor DarkGray
+    $originalClass = $null
+    $originalEnum = $null
+
+    # Save original values first, including a previous backup if one already exists.
+    try {
+        Save-GpuBackup @($target)
+    } catch {
+        Write-Host ('DUNG: Khong sao luu duoc Registry: ' + $_.Exception.Message) -ForegroundColor Red
+        return
+    }
+    try {
+        $originalClass = Get-ItemProperty -LiteralPath $target.Path -ErrorAction Stop
+        $originalEnum = Get-ItemProperty -LiteralPath $target.EnumPath -ErrorAction Stop
+        Set-ItemProperty -LiteralPath $target.Path -Name DriverDesc -Value $newName -ErrorAction Stop
+        Set-ItemProperty -LiteralPath $target.Path -Name ProviderName -Value 'NVIDIA' -ErrorAction Stop
+        Set-ItemProperty -LiteralPath $target.EnumPath -Name DeviceDesc -Value $newName -ErrorAction Stop
+        $checkClass = Get-ItemProperty -LiteralPath $target.Path -ErrorAction Stop
+        $checkEnum = Get-ItemProperty -LiteralPath $target.EnumPath -ErrorAction Stop
+        if ([string]$checkClass.DriverDesc -ne $newName -or
+            [string]$checkClass.ProviderName -ne 'NVIDIA' -or
+            [string]$checkEnum.DeviceDesc -ne $newName) {
+            throw 'Khong xac minh duoc gia tri Registry sau khi ghi.'
+        }
+        Write-Host ('Da ghi ten GPU: ' + $newName) -ForegroundColor Green
+        Write-Host ('Backup: ' + $BackupFile)
+        Restart-Adapters @($target.FullInst)
+        Write-Host 'Luu y: Task Manager/game van co the hien ten GPU goc.' -ForegroundColor Yellow
+    } catch {
+        Write-Host ('Doi ten that bai: ' + $_.Exception.Message) -ForegroundColor Red
+        if ($originalClass -and $originalEnum) {
+            try {
+                Set-ItemProperty -LiteralPath $target.Path -Name DriverDesc -Value ([string]$originalClass.DriverDesc) -ErrorAction Stop
+                Set-ItemProperty -LiteralPath $target.Path -Name ProviderName -Value ([string]$originalClass.ProviderName) -ErrorAction Stop
+                Set-ItemProperty -LiteralPath $target.EnumPath -Name DeviceDesc -Value ([string]$originalEnum.DeviceDesc) -ErrorAction Stop
+                Write-Host 'Da thu khoi phuc gia tri truoc thao tac.' -ForegroundColor Yellow
+            } catch {
+                Write-Host ('Khong khoi phuc ngay duoc, giu backup: ' + $BackupFile) -ForegroundColor Red
+            }
+        }
+    }
+}
+
+if ($QuickAction) {
+    Invoke-QuickGpuAction -Action $QuickAction
+    Write-Host ''
+    Write-Host 'Hoan tat lenh nhanh. Xem ket qua o tren.' -ForegroundColor Cyan
+    return
 }
 
 $exit = $false

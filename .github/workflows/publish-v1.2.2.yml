@@ -1,0 +1,80 @@
+name: Publish v1.2.2 - One-click shortcuts
+on:
+  push:
+    branches: [main]
+    paths:
+      - RELEASE_NOTES_v1.2.2.md
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PowerShell 5.1 and one-click launchers
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '.\GpuTool.i18n.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_.ToString() }
+            throw 'PowerShell syntax verification failed'
+          }
+          $source = Get-Content -LiteralPath '.\GpuTool.i18n.ps1' -Raw
+          if (-not $source.Contains('if ($QuickAction) { $adminArgs +=')) { throw 'UAC quick-action forwarding is missing' }
+          if (-not $source.Contains('function Invoke-QuickGpuAction')) { throw 'One-click handler is missing' }
+          $shortcuts = @{
+            'OneClick_GTX_1050_Ti.cmd' = '1050ti'
+            'OneClick_RTX_2050.cmd' = '2050'
+            'OneClick_Revert.cmd' = 'revert'
+          }
+          foreach ($entry in $shortcuts.GetEnumerator()) {
+            $text = Get-Content -LiteralPath $entry.Key -Raw
+            if (-not $text.Contains(('-QuickAction ' + $entry.Value))) { throw ('Incorrect action in ' + $entry.Key) }
+            if (-not $text.Contains('GpuTool.i18n.ps1')) { throw ('Missing tool path in ' + $entry.Key) }
+          }
+          $models = @(Get-Content -Raw '.\gpu_models.json' | ConvertFrom-Json)
+          $count = @($models | ForEach-Object { $_.Models } | ForEach-Object { $_ }).Count
+          if ($count -ne 8) { throw 'Expected exactly eight GPU preset names' }
+          Write-Host 'PowerShell parser, UAC forwarding, CMD actions, and presets: PASS'
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build v1.2.2 ZIP
+        shell: bash
+        run: |
+          mkdir -p dist
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          import hashlib
+          names = [
+            'Start.bat',
+            'Start-GpuTool.ps1',
+            'GpuTool.i18n.ps1',
+            'gpu_models.json',
+            'locales/en.json',
+            'locales/vi.json',
+            'OneClick_GTX_1050_Ti.cmd',
+            'OneClick_RTX_2050.cmd',
+            'OneClick_Revert.cmd',
+          ]
+          zip_path=Path('dist/DeltaForce-GPU-Toolkit-v1.2.2.zip')
+          with ZipFile(zip_path,'w',ZIP_DEFLATED) as archive:
+              for name in names:
+                  assert Path(name).is_file(),f'Missing file: {name}'
+                  archive.write(name)
+          checksum=hashlib.sha256(zip_path.read_bytes()).hexdigest()
+          Path('dist/SHA256SUMS.txt').write_text(f'{checksum}  {zip_path.name}\n',encoding='utf-8')
+          print('ZIP SHA-256:',checksum)
+          PY
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create v1.2.2 dist/DeltaForce-GPU-Toolkit-v1.2.2.zip dist/SHA256SUMS.txt --target "$GITHUB_SHA" --title "v1.2.2 - One-click GPU Rename and Revert" --notes-file RELEASE_NOTES_v1.2.2.md
