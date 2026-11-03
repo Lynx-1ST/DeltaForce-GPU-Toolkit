@@ -1,19 +1,13 @@
-# DeltaForce GPU Toolkit
+# GPU Tool
 
-GPU utility for Windows PowerShell 5.1. Choose **English** or **Vietnamese (no diacritics)** when starting the tool.
+Based on the user-edited GpuTool.zip, with the original full ACE module integrated. GPU and ICC functions are preserved from the supplied ZIP.
 
-## Installation
-Download the ZIP from [GitHub Releases](https://github.com/Lynx-1ST/DeltaForce-GPU-Toolkit/releases/latest), extract all files together, and run `Start.bat`. Select a language before accepting Administrator access.
+Download the runtime ZIP from [Releases](https://github.com/Lynx-1ST/DeltaForce-GPU-Toolkit/releases/latest), extract everything, then run Start.bat for Vietnamese. Run Start-GpuTool.ps1 through PowerShell for the English / Vietnamese selector. Some GPU messages retain the supplied Vietnamese text.
 
-## GPU names
-Menu [2] lists the actual display adapters first, then offers 8 GPU names and [9] to enter a custom name. The tool saves `gpu_backup.json` before editing Registry descriptions. Menu [3] restores values from the backup.
+Keep the scripts, gpu_models.json and locales together. Windows PowerShell 5.1 is required. Preserve your generated gpu_backup.json when updating.
 
-Keep `GpuTool.i18n.ps1`, `gpu_models.json`, `gpu_ui.json`, `Start.bat`, `Start-GpuTool.ps1`, and the `locales` folder together. Preserve `gpu_backup.json` when updating.
+ACE includes status, EcoQoS/Idle self-test, optional application and a 14-second watchdog. System changes request Administrator access. Read [SAFETY.md](SAFETY.md).
 
-Existing non-GPU functions are unchanged.
+Release ZIPs contain runtime files only. Source tests stay in tests/. Local analysis and the unfinished desktop EXE are excluded.
 
-**Important:** Renaming display text does not change the installed GPU's actual model or supported hardware features. Consult [SAFETY.md](SAFETY.md).
-
-## GPU detection fix (v1.1.1)
-
-If you previously saw `No active PCI GPU with a unique Enum path`, use the latest release. The tool now reads the PCI device's driver key from Registry and uses PnP/CIM discovery as fallback. If Windows still does not expose a unique matching adapter, the tool prints diagnostic counts and stops before changing Registry. Copy those counts when reporting an issue. A successful name write does not guarantee the same name appears in games or Task Manager.
+Verification: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Test-GpuTool.ps1. Checks parse the source and mock menu dispatch without applying GPU/ICC/ACE changes.

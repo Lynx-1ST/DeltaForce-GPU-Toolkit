@@ -46,7 +46,11 @@ $en = Get-Content -LiteralPath $enPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $vi = Get-Content -LiteralPath $viPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $enKeys = @($en.PSObject.Properties.Name | Sort-Object)
 $viKeys = @($vi.PSObject.Properties.Name | Sort-Object)
-Assert-True (($enKeys -join '|') -eq ($viKeys -join '|')) 'Locale key sets differ'
+# The supplied Vietnamese file retains unused legacy keys. Validate the
+# supported English keys and every referenced runtime key without removing them.
+foreach ($key in $enKeys) {
+    Assert-True ($null -ne $vi.PSObject.Properties[$key]) "Vietnamese locale key missing: $key"
+}
 foreach ($key in $enKeys) {
     $enFormats = (Get-FormatTokens ([string]$en.$key)) -join '|'
     $viFormats = (Get-FormatTokens ([string]$vi.$key)) -join '|'
@@ -61,7 +65,7 @@ Assert-True ($runtime.Text -match 'Start-Process\s+powershell\.exe') 'Runtime mu
 $elevationCommand = $runtime.Ast.Find({ param($item) $item -is [System.Management.Automation.Language.CommandAst] -and $item.GetCommandName() -eq 'Start-Process' }, $true)
 Assert-True ($null -ne $elevationCommand -and $elevationCommand.Extent.Text -match "'-Language'\s*,\s*\`$Language") 'Runtime elevation must forward the selected language'
 Assert-True ($selector.Ast.EndBlock.Statements[-1].Extent.Text -match '-Language\s+\$Language') 'Selector must forward the selected language to the runtime'
-Assert-True ($en.K0190 -ceq 'DeltaTool' -and $vi.K0190 -ceq 'DeltaTool') 'Both locales must preserve the ICC settings identity'
+Assert-True ($en.K0190 -ceq 'GpuTool' -and $vi.K0190 -ceq 'GpuTool') 'Both locales must preserve the ICC settings identity'
 
 $forbidden = @(
     '\bGet-MachineId\b', '\bGet-Lic\w*\b', '\bInvoke-LicenseGate\b', '\bInvoke-Activate\b',

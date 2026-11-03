@@ -850,6 +850,25 @@ function Start-AceWatchdog {
     Log ((Get-UiText 'K0455') -f $fixed)
 }
 
+function Show-AceStatus {
+    Write-Host ''
+    Write-Host '===== ACE / SGuard: KIEM TRA TRANG THAI (CHI DOC) =====' -ForegroundColor Cyan
+    Write-Host 'Khong thay doi uu tien, EcoQoS hoac dung tien trinh.' -ForegroundColor DarkGray
+    $procs = @(Get-Process -Name 'SGuard*' -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) {
+        Write-Host 'Khong tim thay tien trinh SGuard dang chay.' -ForegroundColor Yellow
+        return
+    }
+    foreach ($proc in $procs) {
+        $priority = 'Khong doc duoc'
+        $ramMB = 'Khong doc duoc'
+        try { $priority = [string]$proc.PriorityClass } catch { }
+        try { $ramMB = ('{0:N1}' -f ($proc.WorkingSet64 / 1MB)) } catch { }
+        Write-Host ('Ten: {0} | PID: {1} | Uu tien: {2} | RAM: {3} MB' -f $proc.ProcessName, $proc.Id, $priority, $ramMB)
+    }
+    Write-Host 'Ket qua chi phan anh trang thai hien tai, khong ket luan tinh toan ven anti-cheat.' -ForegroundColor DarkGray
+}
+
 function Invoke-AceSelfTest {
     Write-Host ""
     Write-Host "==========================================================" -ForegroundColor Cyan

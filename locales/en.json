@@ -1,6 +1,6 @@
 {
   "K0001": "Administrator permission is required. Requesting elevation (click 'Yes' in the prompt)...",
-  "K0190": "DeltaTool",
+  "K0190": "GpuTool",
   "K0417": "  [{0}] Could not determine the real model from {1}; skipped",
   "K0418": "  [{0}] Restored -> {1}",
   "K0419": "[Restore][{0}] {1}",
@@ -165,7 +165,7 @@
   "K0304": "  [0] Return to previous menu",
   "K0305": "Select a preset number, or enter S to adjust the order",
   "K0137": "            Three-in-one tool v10: GPU spoofing / ACE power saving / ICC filters",
-  "K0139": "  Target name: {0}",
+  "K0139": "  Target GPU: choose in menu [2] (NVIDIA / AMD / Intel / Custom)",
   "K0141": "  --- GPU ---",
   "K0142": "  [1] View current GPU",
   "K0143": "  [2] Spoof as 1050 Ti",
