@@ -79,6 +79,13 @@ foreach ($key in $referencedKeys) {
     Assert-True ($null -ne $en.$key -and $null -ne $vi.$key) "Referenced locale key is missing: $key"
 }
 
+$aceSelfTest = Get-FunctionText $runtime.Ast 'Invoke-AceSelfTest'
+$aceWatchdog = Get-FunctionText $runtime.Ast 'Start-AceWatchdog'
+Assert-True ($aceSelfTest -match '\[ProcThrottle\]::SetEco\(\$p\.Id, \$true\)') 'ACE self-test must enable EcoQoS'
+Assert-True ($aceSelfTest -match '\[ProcThrottle\]::SetEco\(\$p\.Id, \$false\)') 'ACE self-test must restore EcoQoS'
+Assert-True ($aceSelfTest -match 'Start-AceWatchdog\s+-IntervalSec\s+14') 'ACE self-test must offer the 14-second watchdog'
+Assert-True ($aceWatchdog -match '\[ProcThrottle\]::SetEco\(\$p\.Id, \$true\)') 'ACE watchdog must repair EcoQoS'
+
 # The following executes only extracted menu/selector code. All hardware handlers are mocks.
 $getUiText = Get-FunctionText $runtime.Ast 'Get-UiText'
 $menuStart = $runtime.Text.IndexOf('$exit = $false')

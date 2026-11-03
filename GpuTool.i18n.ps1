@@ -1,5 +1,5 @@
 # Windows GPU utility: English / Vietnamese (ASCII).
-# Read SAFETY.md before using system-changing functions.
+# Enum key mapping fixed; backup required before spoof. ACE includes self-test and watchdog.
 [CmdletBinding()]
 param(
     [ValidateSet('en', 'vi')]
@@ -10,14 +10,6 @@ $ErrorActionPreference = 'Stop'
 $localePath = Join-Path (Join-Path $PSScriptRoot 'locales') ($Language.ToLowerInvariant() + '.json')
 if (-not (Test-Path -LiteralPath $localePath)) { throw ('Missing language file: ' + $localePath) }
 $Script:UiStrings = Get-Content -LiteralPath $localePath -Raw -Encoding UTF8 | ConvertFrom-Json
-$gpuLocaleFile = Join-Path $PSScriptRoot 'gpu_ui.json'
-if (-not (Test-Path -LiteralPath $gpuLocaleFile)) { throw ('Missing GPU language file: ' + $gpuLocaleFile) }
-$gpuLocaleAll = Get-Content -LiteralPath $gpuLocaleFile -Raw -Encoding UTF8 | ConvertFrom-Json
-$gpuLocale = $gpuLocaleAll.PSObject.Properties[$Language].Value
-if (-not $gpuLocale) { throw ('Missing GPU language: ' + $Language) }
-foreach ($row in $gpuLocale.PSObject.Properties) {
-    $Script:UiStrings | Add-Member -NotePropertyName $row.Name -NotePropertyValue ([string]$row.Value) -Force
-}
 
 function Get-UiText([string]$Key) {
     $entry = $Script:UiStrings.PSObject.Properties[$Key]
@@ -37,13 +29,14 @@ if (-not $admin) {
 
 $ClassKey    = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
 $EnumRoot    = 'HKLM:\SYSTEM\CurrentControlSet\Enum'
-$SpoofName   = 'select in [2]'
-$SpoofVendor = 'NVIDIA'
+$SpoofName   = ''
+$SpoofVendor = ''
 $AppName     = (Get-UiText 'K0190')
 $BackupFile  = Join-Path $PSScriptRoot 'gpu_backup.json'
+$ModelsFile  = Join-Path $PSScriptRoot 'gpu_models.json'
 
 $LogSensitive = $false
-$LogEnabled   = $false
+$LogEnabled   = $true
 $LogDir   = Join-Path $env:LOCALAPPDATA $AppName
 $LogFile  = Join-Path $LogDir 'gputool.log'
 $LogMaxKB = 256
@@ -241,137 +234,104 @@ function Invoke-RestoreFromInf {
 }
 
 function Get-DisplayAdapters {
-    # Discover from Enum\PCI first. This does not depend on Get-PnpDeviceProperty
-    # returning a particular driver-key format.
-    $displayGuid = '{4d36e968-e325-11ce-bfc1-08002be10318}'
-    $enumPci = Join-Path $EnumRoot 'PCI'
-    $present = @{}
-    $gotPresentList = $false
-    try {
-        $live = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction Stop |
-            Where-Object { $_.InstanceId -match '(?i)^PCI\\' })
-        foreach ($d in $live) { $present[[string]$d.InstanceId] = $true }
-        $gotPresentList = ($present.Count -gt 0)
-    } catch { Log ('Get-PnpDevice discovery: ' + $_.Exception.Message) }
-
-    if (-not $gotPresentList) {
-        try {
-            $liveCim = @(Get-CimInstance Win32_PnPEntity -Filter "PNPClass='Display'" -ErrorAction Stop |
-                Where-Object { $_.PNPDeviceID -match '(?i)^PCI\\' -and $_.ConfigManagerErrorCode -eq 0 })
-            foreach ($d in $liveCim) { $present[[string]$d.PNPDeviceID] = $true }
-            $gotPresentList = ($present.Count -gt 0)
-        } catch { Log ('CIM GPU discovery: ' + $_.Exception.Message) }
-    }
-
-    if (-not $gotPresentList) {
-        try {
-            $videoControllers = @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
-                Where-Object { $_.PNPDeviceID -match '(?i)^PCI\\' })
-            foreach ($d in $videoControllers) { $present[[string]$d.PNPDeviceID] = $true }
-            $gotPresentList = ($present.Count -gt 0)
-        } catch { Log ('Win32_VideoController discovery: ' + $_.Exception.Message) }
-    }
-
-    # Maps the actual driver class subkey (e.g. 0001) to Enum instance entries.
-    $map = @{}
-    if (Test-Path -LiteralPath $enumPci) {
-        foreach ($modelKey in @(Get-ChildItem -LiteralPath $enumPci -ErrorAction SilentlyContinue)) {
-            foreach ($instanceKey in @(Get-ChildItem -LiteralPath $modelKey.PSPath -ErrorAction SilentlyContinue)) {
-                $id = 'PCI\' + $modelKey.PSChildName + '\' + $instanceKey.PSChildName
-                if ($gotPresentList -and -not $present.ContainsKey($id)) { continue }
-                try {
-                    $e = Get-ItemProperty -LiteralPath $instanceKey.PSPath -ErrorAction Stop
-                    $guid = ([string]$e.ClassGUID).Trim()
-                    if ($guid -and $guid -ine $displayGuid) { continue }
-                    $driver = ([string]$e.Driver).Trim()
-                    if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
-                        # Some installations expose the driver key via the PnP property API.
-                        try {
-                            $driver = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName 'DEVPKEY_Device_Driver' -ErrorAction Stop).Data
-                        } catch { $driver = '' }
-                    }
-                    if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
-                        Log ('No valid class Driver key for Enum PCI device: ' + $id)
-                        continue
-                    }
-                    $slot = $Matches[1]
-                    if (-not $map.ContainsKey($slot)) { $map[$slot] = @() }
-                    $map[$slot] += [pscustomobject]@{
-                        Instance = $id
-                        EnumPath = [string]$instanceKey.PSPath
-                        EnumInfo = $e
-                    }
-                } catch { Log ('Enum PCI entry read error: ' + $_.Exception.Message) }
-            }
-        }
-    }
-
-    # If Enum registry enumeration was blocked, resolve from active PnP IDs.
-    foreach ($id in @($present.Keys)) {
-        $already = $false
-        foreach ($slot in @($map.Keys)) {
-            foreach ($obj in @($map[$slot])) {
-                if ($obj.Instance -ieq $id) { $already = $true; break }
-            }
-            if ($already) { break }
-        }
-        if ($already) { continue }
-
-        $enumPath = Join-Path $EnumRoot $id
-        if (-not (Test-Path -LiteralPath $enumPath)) { continue }
-        try {
-            $entry = Get-ItemProperty -LiteralPath $enumPath -ErrorAction Stop
-            $driver = ([string]$entry.Driver).Trim()
-            if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
-                $driver = [string](Get-PnpDeviceProperty -InstanceId $id -KeyName 'DEVPKEY_Device_Driver' -ErrorAction Stop).Data
-            }
-            if ($driver -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') { continue }
-            $slot = $Matches[1]
-            if (-not $map.ContainsKey($slot)) { $map[$slot] = @() }
-            $map[$slot] += [pscustomobject]@{
-                Instance = $id
-                EnumPath = $enumPath
-                EnumInfo = $entry
-            }
-        } catch { Log ('PnP fallback error: ' + $_.Exception.Message) }
-    }
-
     $list = @()
-    foreach ($classKey in @(Get-ChildItem -LiteralPath $ClassKey -ErrorAction SilentlyContinue |
+    $pnpByDriverKey = @{}
+
+    try {
+        $pnpDevs = @(Get-PnpDevice -Class Display -PresentOnly -ErrorAction Stop |
+            Where-Object { $_.InstanceId -match '^PCI\\' })
+    } catch {
+        $pnpDevs = @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+            Where-Object { $_.InstanceId -match '^PCI\\' -and $_.Status -eq 'OK' })
+    }
+    Log ("GPU PnP dang hoat dong: {0}" -f $pnpDevs.Count)
+
+    foreach ($dev in $pnpDevs) {
+        $deviceId = [string]$dev.InstanceId
+        $enumKeyPath = Join-Path $EnumRoot $deviceId
+        $enumReg = $null
+        try {
+            if (Test-Path -LiteralPath $enumKeyPath) {
+                $enumReg = Get-ItemProperty -LiteralPath $enumKeyPath -ErrorAction Stop
+            }
+        } catch { Log ("Khong doc duoc Enum: {0}" -f $_.Exception.Message) }
+
+        # DEVPKEY_Device_Driver la 'Driver key' cua CHINH device instance nay.
+        $driverKey = ''
+        try {
+            $property = Get-PnpDeviceProperty -InstanceId $deviceId -KeyName 'DEVPKEY_Device_Driver' -ErrorAction Stop
+            $driverKey = [string]$property.Data
+        } catch { Log ("Get-PnpDeviceProperty khong doc duoc Driver: {0}" -f $_.Exception.Message) }
+        $driverKey = $driverKey.Trim()
+        if (($driverKey -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\[0-9]{4}$') -and $null -ne $enumReg) {
+            $driverKey = ([string]$enumReg.Driver).Trim()
+        }
+        # Class GUID and the 4-digit driver key must match exactly.
+        if ($driverKey -notmatch '(?i)^\{4d36e968-e325-11ce-bfc1-08002be10318\}\\([0-9]{4})$') {
+            Log ("GPU PnP khong co Driver key hop le: {0}" -f $deviceId)
+            continue
+        }
+        $subKey = $Matches[1]
+        if (-not $pnpByDriverKey.ContainsKey($subKey)) { $pnpByDriverKey[$subKey] = @() }
+        $pnpByDriverKey[$subKey] = @($pnpByDriverKey[$subKey]) + @([pscustomobject]@{
+            Device = $dev
+            FullInst = $deviceId
+            EnumPath = $(if ($null -ne $enumReg) { $enumKeyPath } else { $null })
+            EnumReg = $enumReg
+        })
+    }
+
+    foreach ($key in @(Get-ChildItem -LiteralPath $ClassKey -ErrorAction SilentlyContinue |
         Where-Object { $_.PSChildName -match '^[0-9]{4}$' })) {
         try {
-            $p = Get-ItemProperty -LiteralPath $classKey.PSPath -ErrorAction Stop
+            $p = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
             if (-not $p.DriverDesc) { continue }
-            $slot = [string]$classKey.PSChildName
-            $entries = if ($map.ContainsKey($slot)) { @($map[$slot]) } else { @() }
-            $matched = if ($entries.Count -eq 1) { $entries[0] } else { $null }
-            if ($entries.Count -gt 1) {
-                Log ('Ambiguous PCI Enum mapping for Class key ' + $slot)
+            $subKey = [string]$key.PSChildName
+            $candidates = @()
+            if ($pnpByDriverKey.ContainsKey($subKey)) { $candidates = @($pnpByDriverKey[$subKey]) }
+            $matched = $null
+            if ($candidates.Count -eq 1) { $matched = $candidates[0] }
+            elseif ($candidates.Count -gt 1) {
+                Log ("NHIEU PnP cung Driver key {0}; bo qua de tranh chon sai." -f $subKey)
             }
-            $instance = if ($matched) { [string]$matched.Instance } else { '' }
-            $ep = if ($matched) { [string]$matched.EnumPath } else { '' }
-            $e = if ($matched) { $matched.EnumInfo } else { $null }
-            $svc = if ($e) { [string]$e.Service } else { '' }
-            $loc = if ($e) { [string]$e.LocationInformation } else { '' }
-            $hardwareId = if ($instance) { $instance } else { [string]$p.MatchingDeviceId }
-            $valid = [bool]($instance -match '(?i)^PCI\\' -and $ep -and (Test-Path -LiteralPath $ep))
+
+            $fullInst = $null; $enumPath = $null; $enumDesc = $null
+            $svc = ''; $locInfo = ''; $isReal = $false
+            if ($null -ne $matched) {
+                $fullInst = [string]$matched.FullInst
+                $enumPath = $matched.EnumPath
+                $isReal = $fullInst -match '^PCI\\'
+                if ($null -ne $matched.EnumReg) {
+                    $enumDesc = [string]$matched.EnumReg.DeviceDesc
+                    $svc = [string]$matched.EnumReg.Service
+                    $locInfo = [string]$matched.EnumReg.LocationInformation
+                }
+                if (-not $enumPath) {
+                    Log ("Co PnP va Driver key nhung Enum khong doc duoc: {0}" -f $fullInst)
+                }
+            } else {
+                Log ("Class key {0} chua gan duoc PnP hien tai (co the la driver cu)." -f $subKey)
+            }
+            $matchingId = [string]$p.MatchingDeviceId
+            $hwIdForClass = if ($fullInst) { $fullInst } else { $matchingId }
             $list += [pscustomobject]@{
-                Key = $slot; Desc = [string]$p.DriverDesc; Provider = [string]$p.ProviderName
-                InstId = [string]$p.MatchingDeviceId; FullInst = $instance; IsReal = $valid
-                EnumPath = $ep; EnumDesc = $(if ($e) { [string]$e.DeviceDesc } else { '' })
-                Path = $classKey.PSPath; HWID = (Get-HwId $hardwareId); InfPath = [string]$p.InfPath
-                Service = $svc; Location = $loc
-                GpuKind = $(if ($valid) { Classify-GpuKind (Get-HwId $hardwareId) $svc $loc } else { 'Other' })
+                Key      = $subKey
+                Desc     = [string]$p.DriverDesc
+                Provider = [string]$p.ProviderName
+                InstId   = $matchingId
+                FullInst = $fullInst
+                IsReal   = $isReal
+                EnumPath = $enumPath
+                EnumDesc = $enumDesc
+                Path     = $key.PSPath
+                HWID     = (Get-HwId $hwIdForClass)
+                InfPath  = [string]$p.InfPath
+                Service  = $svc
+                Location = $locInfo
+                GpuKind  = $(if ($isReal) { Classify-GpuKind (Get-HwId $hwIdForClass) $svc $locInfo } else { 'Other' })
             }
-        } catch { Log ('Class GPU entry read error: ' + $_.Exception.Message) }
+        } catch { Log ("Loi khi doc class registry GPU: {0}" -f $_.Exception.Message) }
     }
-    $Script:GpuLookupSummary = [pscustomobject]@{
-        PresentPCI = $present.Count
-        MappedDriverKeys = $map.Count
-        ClassKeys = $list.Count
-        Usable = @($list | Where-Object { $_.IsReal }).Count
-    }
-    Log ('GPU discovery: PresentPCI=' + $present.Count + '; DriverKeys=' + $map.Count + '; ClassKeys=' + $list.Count)
     return $list
 }
 
@@ -414,119 +374,282 @@ function Show-Current {
     }
 }
 
-function Select-GpuTarget {
-    $all = @(Get-DisplayAdapters | Where-Object { $_.IsReal -and $_.FullInst -and $_.EnumPath } | Sort-Object Key)
+
+# Model list is data-driven (gpu_models.json); no name is hardcoded in the spoof routine.
+function Get-GpuVendorFromId([string]$InstanceId) {
+    if ($InstanceId -match '(?i)VEN_10DE') { return 'NVIDIA' }
+    if ($InstanceId -match '(?i)VEN_1002') { return 'AMD' }
+    if ($InstanceId -match '(?i)VEN_8086') { return 'Intel' }
+    return ''
+}
+
+function Select-GpuToRename($Adapters) {
+    $all = @($Adapters | Where-Object { $_.IsReal -and $_.FullInst -and $_.EnumPath } | Sort-Object Key)
     if ($all.Count -eq 0) {
-        Write-Host (Get-UiText 'G01') -ForegroundColor Red
-        if ($Script:GpuLookupSummary) {
-            Write-Host ((Get-UiText 'G23') -f $Script:GpuLookupSummary.PresentPCI, $Script:GpuLookupSummary.MappedDriverKeys, $Script:GpuLookupSummary.ClassKeys) -ForegroundColor Yellow
-        }
-        Write-Host (Get-UiText 'G24') -ForegroundColor Yellow
+        Write-Host 'Khong co GPU PCI phu hop voi khoa Enum va Driver. Khong thay doi Registry.' -ForegroundColor Red
+        return @()
+    }
+    Write-Host ''
+    Write-Host '===== CHON GPU THAT CAN DOI TEN =====' -ForegroundColor Cyan
+    for ($i=0; $i -lt $all.Count; $i++) {
+        $a = $all[$i]
+        $vendor = Get-GpuVendorFromId $a.FullInst
+        $kind = if ($a.GpuKind -eq 'Discrete') { 'GPU roi' } elseif ($a.GpuKind -eq 'Integrated') { 'GPU tich hop' } else { 'GPU' }
+        Write-Host ('  [{0}] {1} | {2} | {3} | Driver key {4}' -f ($i+1), $a.Desc, $vendor, $kind, $a.Key)
+    }
+    Write-Host '  [0] Huy' -ForegroundColor DarkGray
+    $selected = (Read-Host 'Chon so GPU can doi ten').Trim()
+    if ($selected -eq '0' -or [string]::IsNullOrWhiteSpace($selected)) { return @() }
+    $num = 0
+    if (-not [int]::TryParse($selected, [ref]$num) -or $num -lt 1 -or $num -gt $all.Count) {
+        Write-Host 'So GPU khong hop le. Khong thay doi gi.' -ForegroundColor Yellow
+        return @()
+    }
+    return @($all[$num-1])
+}
+
+function Get-GpuModelSelection {
+    # Danh muc chi gom 8 mau trong gpu_models.json, kem mot lua chon nhap tu do.
+    if (-not (Test-Path -LiteralPath $ModelsFile)) {
+        Write-Host ('Khong tim thay danh muc GPU: ' + $ModelsFile) -ForegroundColor Red
         return $null
     }
-    Write-Host (Get-UiText 'G02') -ForegroundColor Cyan
-    for ($i=0; $i -lt $all.Count; $i++) { Write-Host ('[{0}] {1} (Driver {2})' -f ($i+1),$all[$i].Desc,$all[$i].Key) }
-    $choice = [string](Read-Host (Get-UiText 'G03'))
-    $n = 0
-    if (-not [int]::TryParse($choice,[ref]$n) -or $n -lt 1 -or $n -gt $all.Count) { return $null }
-    return $all[$n-1]
-}
-function Select-GpuName {
-    $file = Join-Path $PSScriptRoot 'gpu_models.json'
-    if (-not (Test-Path -LiteralPath $file)) { throw (Get-UiText 'G04') }
-    $groups = @(Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json)
-    $names = @()
-    foreach ($group in $groups) { foreach ($item in @($group.Models)) { $names += [string]$item } }
-    if ($names.Count -ne 8) { throw (Get-UiText 'G04') }
-    Write-Host (Get-UiText 'G05') -ForegroundColor Cyan
-    for ($i=0; $i -lt 8; $i++) { Write-Host ('[{0}] {1}' -f ($i+1),$names[$i]) }
-    Write-Host (Get-UiText 'G06')
-    $pick = [string](Read-Host (Get-UiText 'G07'))
-    $n = 0
-    if (-not [int]::TryParse($pick,[ref]$n)) { return $null }
-    if ($n -eq 9) { $name = ([string](Read-Host (Get-UiText 'G08'))).Trim() }
-    elseif ($n -ge 1 -and $n -le 8) { $name = $names[$n-1].Trim() }
-    else { return $null }
-    if ($name.Length -lt 5 -or $name.Length -gt 120 -or $name -match '[\x00-\x1f]') { throw (Get-UiText 'G09') }
-    return $name
-}
-function Save-GpuBackup($gpu) {
-    $file = Join-Path $PSScriptRoot 'gpu_backup.json'
-    $records = @()
-    if (Test-Path -LiteralPath $file) {
-        $obj = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($obj.Version -ne 1 -or -not $obj.Adapters) { throw (Get-UiText 'G10') }
-        $records = @($obj.Adapters)
-    }
-    $exists = @($records | Where-Object { $_.Key -eq $gpu.Key -and $_.FullInst -eq $gpu.FullInst })
-    if ($exists.Count -gt 1) { throw (Get-UiText 'G10') }
-    if ($exists.Count -eq 1) { return $file }
-    $c = Get-ItemProperty -LiteralPath $gpu.Path -ErrorAction Stop
-    $e = Get-ItemProperty -LiteralPath $gpu.EnumPath -ErrorAction Stop
-    $records += [pscustomobject]@{
-        Key=$gpu.Key;FullInst=$gpu.FullInst;
-        DriverDesc=[string]$c.DriverDesc;ProviderName=[string]$c.ProviderName;DeviceDesc=[string]$e.DeviceDesc
-    }
-    $out = [pscustomobject]@{Version=1;Adapters=@($records)}
-    $tmp = $file + '.tmp'
-    [IO.File]::WriteAllText($tmp,(ConvertTo-Json -InputObject $out -Depth 6),(New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmp -Destination $file -Force -ErrorAction Stop
-    return $file
-}
-function Restore-GpuBackup {
-    $file = Join-Path $PSScriptRoot 'gpu_backup.json'
-    if (-not (Test-Path -LiteralPath $file)) { Write-Host (Get-UiText 'G11') -ForegroundColor Yellow; return }
     try {
-        $obj = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($obj.Version -ne 1 -or -not $obj.Adapters) { throw (Get-UiText 'G10') }
-        $all = @(Get-DisplayAdapters)
-        $restart = @()
-        $ok = $true
-        foreach ($r in @($obj.Adapters)) {
-            $found = @($all | Where-Object { $_.IsReal -and $_.Key -eq $r.Key -and $_.FullInst -eq $r.FullInst })
-            if ($found.Count -ne 1) { $ok = $false; Write-Host (Get-UiText 'G12') -ForegroundColor Red; continue }
-            $gpu = $found[0]
-            try {
-                Set-ItemProperty -LiteralPath $gpu.Path -Name DriverDesc -Value ([string]$r.DriverDesc) -ErrorAction Stop
-                Set-ItemProperty -LiteralPath $gpu.Path -Name ProviderName -Value ([string]$r.ProviderName) -ErrorAction Stop
-                Set-ItemProperty -LiteralPath $gpu.EnumPath -Name DeviceDesc -Value ([string]$r.DeviceDesc) -ErrorAction Stop
-                $c = Get-ItemProperty -LiteralPath $gpu.Path -ErrorAction Stop
-                $e = Get-ItemProperty -LiteralPath $gpu.EnumPath -ErrorAction Stop
-                if ($c.DriverDesc -ne $r.DriverDesc -or $e.DeviceDesc -ne $r.DeviceDesc) { throw (Get-UiText 'G13') }
-                $restart += $gpu.FullInst
-                Write-Host ((Get-UiText 'G14') -f $r.DriverDesc) -ForegroundColor Green
-            } catch { $ok = $false; Write-Host $_.Exception.Message -ForegroundColor Red }
+        $groups = @(Get-Content -LiteralPath $ModelsFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+        Write-Host ('Khong doc duoc danh muc GPU: ' + $_.Exception.Message) -ForegroundColor Red
+        return $null
+    }
+    $items = @()
+    foreach ($group in $groups) {
+        $vendor = ([string]$group.Vendor).Trim()
+        foreach ($rawName in @($group.Models)) {
+            $name = ([string]$rawName).Trim()
+            if ($name.Length -lt 5 -or $name.Length -gt 120 -or $name -match '[\x00-\x1f]') {
+                Write-Host ('Ten GPU trong danh muc khong hop le: ' + $name) -ForegroundColor Red
+                return $null
+            }
+            $items += [pscustomobject]@{ Name = $name; Vendor = $vendor }
         }
-        if ($restart.Count) { Restart-Adapters $restart }
-        if ($ok) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
-        else { Write-Host (Get-UiText 'G15') -ForegroundColor Yellow }
-    } catch { Write-Host $_.Exception.Message -ForegroundColor Red }
+    }
+    if ($items.Count -ne 8) {
+        Write-Host 'Danh muc phai co dung 8 mau GPU. Kiem tra lai gpu_models.json.' -ForegroundColor Red
+        return $null
+    }
+    Write-Host ''
+    Write-Host '===== CHON TEN GPU GIA LAP =====' -ForegroundColor Cyan
+    for ($i=0; $i -lt $items.Count; $i++) {
+        Write-Host ('  [{0}] {1}' -f ($i+1), $items[$i].Name)
+    }
+    Write-Host '  [9] Tu nhap ten GPU bat ky' -ForegroundColor Green
+    Write-Host '  [0] Huy' -ForegroundColor DarkGray
+    $choice = (Read-Host 'Chon so 0-9').Trim()
+    if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
+    if ($choice -eq '9') {
+        $name = (Read-Host 'Nhap ten GPU moi').Trim()
+        if ($name.Length -lt 5 -or $name.Length -gt 120 -or $name -match '[\x00-\x1f]') {
+            Write-Host 'Ten khong hop le (5-120 ky tu, khong co ky tu dieu khien).' -ForegroundColor Yellow
+            return $null
+        }
+        $vendor = ''
+        if ($name -match '^(?i:NVIDIA)\b') { $vendor = 'NVIDIA' }
+        elseif ($name -match '^(?i:AMD)\b') { $vendor = 'AMD' }
+        elseif ($name -match '^(?i:Intel)\b') { $vendor = 'Intel' }
+        return [pscustomobject]@{ Name=$name; Vendor=$vendor }
+    }
+    $number = 0
+    if (-not [int]::TryParse($choice, [ref]$number) -or $number -lt 1 -or $number -gt 8) {
+        Write-Host 'Lua chon khong hop le. Khong thay doi Registry.' -ForegroundColor Yellow
+        return $null
+    }
+    return $items[$number-1]
 }
-function Invoke-Spoof {
-    $gpu = Select-GpuTarget
-    if (-not $gpu) { return }
-    try { $name = Select-GpuName } catch { Write-Host $_.Exception.Message -ForegroundColor Red; return }
-    if (-not $name) { return }
-    Write-Host ((Get-UiText 'G16') -f $gpu.Desc,$name) -ForegroundColor Cyan
-    $confirm = ([string](Read-Host (Get-UiText 'G17'))).Trim().ToLowerInvariant()
-    if ($confirm -ne 'yes') { return }
-    try { $backup = Save-GpuBackup $gpu }
-    catch { Write-Host ((Get-UiText 'G18') -f $_.Exception.Message) -ForegroundColor Red; return }
+
+function Save-GpuBackup($ads) {
+    # Preserve original values for every device; do not overwrite a previously saved original.
+    $records = @()
+    if (Test-Path -LiteralPath $BackupFile) {
+        $old = Get-Content -LiteralPath $BackupFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($old.Version -ne 1 -or -not $old.Adapters) { throw 'Backup cu khong hop le. Khong duoc ghi de.' }
+        $records = @($old.Adapters)
+    }
+    $addCount = 0
+    foreach ($a in @($ads)) {
+        if (-not $a.FullInst -or -not $a.EnumPath) { throw ('GPU khong co Enum day du: ' + $a.Key) }
+        $match = @($records | Where-Object { $_.FullInst -eq $a.FullInst -and $_.Key -eq $a.Key })
+        if ($match.Count -eq 1) {
+            Write-Host ('Da co backup cho GPU [' + $a.Key + '], giu nguyen ten goc.') -ForegroundColor Yellow
+            continue
+        }
+        if ($match.Count -gt 1) { throw 'Backup co du lieu trung lap, da dung.' }
+        $c = Get-ItemProperty -LiteralPath $a.Path -ErrorAction Stop
+        $e = Get-ItemProperty -LiteralPath $a.EnumPath -ErrorAction Stop
+        $records += [pscustomobject]@{
+            Key = $a.Key
+            FullInst = $a.FullInst
+            DriverDesc = [string]$c.DriverDesc
+            ProviderName = [string]$c.ProviderName
+            DeviceDesc = [string]$e.DeviceDesc
+        }
+        $addCount++
+    }
+    if ($addCount -gt 0) {
+        $data = [pscustomobject]@{ Version=1; Created=(Get-Date -Format o); Adapters=@($records) }
+        $json = ConvertTo-Json -InputObject $data -Depth 6
+        $tmp = $BackupFile + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $BackupFile -Force -ErrorAction Stop
+        Write-Host ('Da luu backup ' + $addCount + ' GPU vao: ' + $BackupFile) -ForegroundColor Green
+    }
+}
+
+function Restore-GpuBackup {
+    if (-not (Test-Path -LiteralPath $BackupFile)) { return $false }
     try {
-        Set-ItemProperty -LiteralPath $gpu.Path -Name DriverDesc -Value $name -ErrorAction Stop
-        Set-ItemProperty -LiteralPath $gpu.EnumPath -Name DeviceDesc -Value $name -ErrorAction Stop
-        $c = Get-ItemProperty -LiteralPath $gpu.Path -ErrorAction Stop
-        $e = Get-ItemProperty -LiteralPath $gpu.EnumPath -ErrorAction Stop
-        if ($c.DriverDesc -ne $name -or $e.DeviceDesc -ne $name) { throw (Get-UiText 'G13') }
-        Write-Host ((Get-UiText 'G19') -f $name,$backup) -ForegroundColor Green
-        Restart-Adapters @($gpu.FullInst)
-        $api = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -eq $gpu.FullInst })
-        if ($api.Count) { Write-Host ((Get-UiText 'G20') -f $api[0].Name) }
-        Write-Host (Get-UiText 'G21') -ForegroundColor Yellow
-    } catch { Write-Host ((Get-UiText 'G22') -f $_.Exception.Message) -ForegroundColor Red; Write-Host (Get-UiText 'G15') -ForegroundColor Yellow }
+        $b = Get-Content -LiteralPath $BackupFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($b.Version -ne 1 -or -not $b.Adapters) { throw 'Backup khong hop le.' }
+        $current = @(Get-DisplayAdapters)
+        $changed = @()
+        $allOk = $true
+        foreach ($r in @($b.Adapters)) {
+            # Never use a registry path loaded from the backup file itself.
+            $hits = @($current | Where-Object {
+                $_.IsReal -and $_.Key -eq $r.Key -and $_.FullInst -eq $r.FullInst -and $_.EnumPath
+            })
+            if ($hits.Count -ne 1) {
+                Write-Host ('Khong the xac minh dung GPU de Revert: ' + $r.Key) -ForegroundColor Red
+                $allOk = $false; continue
+            }
+            $a = $hits[0]
+            try {
+                Set-ItemProperty -LiteralPath $a.Path -Name DriverDesc -Value ([string]$r.DriverDesc) -ErrorAction Stop
+                Set-ItemProperty -LiteralPath $a.Path -Name ProviderName -Value ([string]$r.ProviderName) -ErrorAction Stop
+                Set-ItemProperty -LiteralPath $a.EnumPath -Name DeviceDesc -Value ([string]$r.DeviceDesc) -ErrorAction Stop
+                $c = Get-ItemProperty -LiteralPath $a.Path -ErrorAction Stop
+                $e = Get-ItemProperty -LiteralPath $a.EnumPath -ErrorAction Stop
+                if ($c.DriverDesc -ne $r.DriverDesc -or $c.ProviderName -ne $r.ProviderName -or $e.DeviceDesc -ne $r.DeviceDesc) {
+                    throw 'Gia tri Registry chua khop backup sau khi ghi.'
+                }
+                $changed += $a.FullInst
+                Write-Host ('Revert thanh cong: ' + $r.DriverDesc) -ForegroundColor Green
+            } catch {
+                $allOk = $false
+                Write-Host ('Revert loi: ' + $_.Exception.Message) -ForegroundColor Red
+            }
+        }
+        if ($changed.Count -gt 0) { Restart-Adapters $changed }
+        if ($allOk) {
+            Remove-Item -LiteralPath $BackupFile -Force -ErrorAction Stop
+            Write-Host 'Da Revert tat ca va xoa backup hoan tat.' -ForegroundColor Green
+        } else { Write-Host 'Backup duoc giu lai de thu lai.' -ForegroundColor Yellow }
+        return $true
+    } catch {
+        Write-Host ('Khong doc/khong xu ly duoc backup: ' + $_.Exception.Message) -ForegroundColor Red
+        return $true
+    }
 }
+
+function Invoke-Spoof {
+    Log 'Mo menu doi ten GPU tu danh muc.'
+    $ads = @(Get-DisplayAdapters)
+    if ($ads.Count -eq 0) { Write-Host 'Khong tim thay GPU trong Registry.' -ForegroundColor Red; return }
+
+    $targets = @(Select-GpuToRename $ads)
+    if ($targets.Count -eq 0) { return }
+    $a = $targets[0]
+    $pick = Get-GpuModelSelection
+    if ($null -eq $pick) { return }
+    $newName = [string]$pick.Name
+    $newVendor = [string]$pick.Vendor
+    $actualVendor = Get-GpuVendorFromId $a.FullInst
+
+    Write-Host ''
+    Write-Host ('GPU that: ' + $a.Desc) -ForegroundColor Cyan
+    Write-Host ('Ten moi : ' + $newName) -ForegroundColor Cyan
+    Write-Host ('GPU ID  : ' + $a.FullInst) -ForegroundColor DarkGray
+    if ($actualVendor -and $newVendor -and ($actualVendor -ne $newVendor)) {
+        Write-Host ('CANH BAO: Ban dang doi ten khac hang (' + $actualVendor + ' -> ' + $newVendor + ').') -ForegroundColor Yellow
+        Write-Host 'Driver van la driver goc, thu tuc nay khong tao them tinh nang phan cung.' -ForegroundColor Yellow
+    }
+    if ($a.Desc -eq $newName -and $a.EnumDesc -eq $newName) {
+        Write-Host 'Ten GPU da giong ten da chon. Khong can ghi Registry.' -ForegroundColor Yellow
+        return
+    }
+    $confirm = (Read-Host 'Xac nhan ghi Registry cho GPU nay? (yes/no)').Trim().ToLowerInvariant()
+    if ($confirm -ne 'yes') { Write-Host 'Da huy.' -ForegroundColor Yellow; return }
+
+    try { Save-GpuBackup $targets }
+    catch {
+        Write-Host ('DUNG: Backup that bai. Khong thay doi Registry: ' + $_.Exception.Message) -ForegroundColor Red
+        return
+    }
+
+    # If a custom name does not identify a vendor, leave ProviderName unchanged.
+    $originalClass = $null
+    $originalEnum = $null
+    try {
+        $originalClass = Get-ItemProperty -LiteralPath $a.Path -ErrorAction Stop
+        $originalEnum = Get-ItemProperty -LiteralPath $a.EnumPath -ErrorAction Stop
+        Set-ItemProperty -LiteralPath $a.Path -Name DriverDesc -Value $newName -ErrorAction Stop
+        if ($newVendor) {
+            Set-ItemProperty -LiteralPath $a.Path -Name ProviderName -Value $newVendor -ErrorAction Stop
+        }
+        Set-ItemProperty -LiteralPath $a.EnumPath -Name DeviceDesc -Value $newName -ErrorAction Stop
+        $checkC = Get-ItemProperty -LiteralPath $a.Path -ErrorAction Stop
+        $checkE = Get-ItemProperty -LiteralPath $a.EnumPath -ErrorAction Stop
+        if ([string]$checkC.DriverDesc -ne $newName -or [string]$checkE.DeviceDesc -ne $newName) {
+            throw 'Gia tri Registry khong dung sau khi ghi.'
+        }
+        Write-Host ''
+        Write-Host 'DA DOI TEN TRONG REGISTRY:' -ForegroundColor Green
+        Write-Host ('  Ten cu : ' + $originalClass.DriverDesc)
+        Write-Host ('  Ten moi: ' + $checkC.DriverDesc)
+        Write-Host ('  Enum   : ' + $checkE.DeviceDesc)
+        Write-Host ('  Backup : ' + $BackupFile)
+        Write-Host 'Luu y: Windows/Task Manager/game co the van doc ten tu driver hoac API khac.' -ForegroundColor Yellow
+        Restart-Adapters @($a.FullInst)
+        # Read again; make clear that the registry value is not the same as the driver/API name.
+        Write-Host ''
+        Write-Host '===== KIEM TRA SAU KHI RESTART DRIVER =====' -ForegroundColor Cyan
+        try {
+            $afterItems = @(Get-DisplayAdapters | Where-Object { $_.FullInst -eq $a.FullInst -and $_.Key -eq $a.Key })
+            if ($afterItems.Count -eq 1) {
+                Write-Host ('Registry DriverDesc: ' + $afterItems[0].Desc)
+                Write-Host ('Registry Enum DeviceDesc: ' + $afterItems[0].EnumDesc)
+            } else {
+                Write-Host 'Chua doc lai duoc Registry sau khi restart. Co the can khoi dong lai Windows.' -ForegroundColor Yellow
+            }
+            $wmiItems = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.PNPDeviceID -eq $a.FullInst })
+            if ($wmiItems.Count -gt 0) {
+                Write-Host ('Ten theo Win32_VideoController: ' + $wmiItems[0].Name)
+            } else { Write-Host 'Khong doc duoc ten GPU tu WMI luc nay.' -ForegroundColor Yellow }
+        } catch {
+            Write-Host ('Khong the doc thong tin sau restart: ' + $_.Exception.Message) -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host ('Doi ten that bai: ' + $_.Exception.Message) -ForegroundColor Red
+        Log ('Doi ten that bai: ' + $_.Exception.Message)
+        # Undo partial changes in this attempt; the JSON backup remains available.
+        if ($null -ne $originalClass -and $null -ne $originalEnum) {
+            try {
+                Set-ItemProperty -LiteralPath $a.Path -Name DriverDesc -Value ([string]$originalClass.DriverDesc) -ErrorAction Stop
+                Set-ItemProperty -LiteralPath $a.Path -Name ProviderName -Value ([string]$originalClass.ProviderName) -ErrorAction Stop
+                Set-ItemProperty -LiteralPath $a.EnumPath -Name DeviceDesc -Value ([string]$originalEnum.DeviceDesc) -ErrorAction Stop
+                Write-Host 'Da thu khoi phuc ngay cac gia tri truoc thao tac.' -ForegroundColor Yellow
+            } catch {
+                Write-Host ('CANH BAO: Revert nhanh that bai. Hay su dung backup: ' + $BackupFile) -ForegroundColor Red
+            }
+        }
+    }
+}
+
 function Invoke-Restore {
-    Restore-GpuBackup
+    Log (Get-UiText 'K0059')
+    if (Test-Path -LiteralPath $BackupFile) { return (Restore-GpuBackup) }
+    Write-Host 'Khong co backup. Phuong an khac phuc tu INF co the khong khop Registry goc.' -ForegroundColor Yellow
+    $answer = Read-Host 'Van muon tiep tuc khoi phuc theo INF? (yes/no)'
+    if ($answer -ne 'yes') { return $false }
+    return (Invoke-RestoreFromInf)
 }
 
 Add-Type -TypeDefinition @"
@@ -1213,7 +1336,7 @@ while (-not $exit) {
     Write-Host "==========================================================" -ForegroundColor Cyan
     Write-Host (Get-UiText 'K0137') -ForegroundColor Cyan
     Write-Host "==========================================================" -ForegroundColor Cyan
-    Write-Host ((Get-UiText 'K0139') -f $SpoofName)
+    Write-Host (Get-UiText 'K0139')
     Write-Host (Get-UiText 'K0141')
     Write-Host (Get-UiText 'K0142')
     Write-Host (Get-UiText 'K0143')
